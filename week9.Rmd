@@ -1,0 +1,161 @@
+---
+title: "week9"
+output: html_document
+date: "2025-12-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+data <- read.csv("/Users/blubb/Desktop/170 files/mergeddata.csv")
+
+set.seed(58)    #seed 58
+n <- nrow(data)
+train_index <- sample(1:n, size = 0.7 * n)
+train_data <- data[train_index, ]
+test_data  <- data[-train_index, ]
+
+```
+
+
+```{r}
+train_data$disaster.4 <- train_data$totalDisasters^0.4
+
+#centering everything
+train_data$PPMC <- train_data$PPM - mean(train_data$PPM)
+
+train_data$seaTempC <- train_data$aveMonthSeaTemp - mean(train_data$aveMonthSeaTemp)
+
+train_data$surfacePressC <- train_data$avg_surfacePressure - mean(train_data$avg_surfacePressure)
+
+train_data$surfaceTempCngC <- train_data$Anomaly - mean(train_data$Anomaly)
+
+train_data$sealevelCngC <- train_data$avg_cng_sealevel - mean(train_data$avg_cng_sealevel)
+```
+
+
+I decided to add a sqrt to the y variable because the residuals vs fitted plot from last weeks model showed an extremely tiny dip and this did increase the R^2 adjusted slightly. 
+```{r}
+mod1 <- lm(disaster.4 ~ 
+                PPMC + seaTempC + sealevelCngC + I(PPMC^3) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (PPMC*sealevelCngC) + (PPMC*surfacePressC) 
+              + (seaTempC*surfacePressC) + (surfaceTempCngC*sealevelCngC) 
+              + (surfaceTempCngC*surfacePressC) + (sealevelCngC*surfacePressC), 
+              data = train_data) 
+summary(mod1)
+```
+
+
+```{r}
+mod2 <- lm(disaster.4 ~ 
+                PPMC + seaTempC + sealevelCngC + I(PPMC^3) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (PPMC*surfacePressC) 
+              + (seaTempC*surfacePressC) + (surfaceTempCngC*sealevelCngC) 
+              + (surfaceTempCngC*surfacePressC) + (sealevelCngC*surfacePressC), 
+              data = train_data) 
+summary(mod2)
+```
+
+The partial F-test comparing full and reduced models showed that removing the  
+(PPMC * sealevelCngC) term did not significantly reduce model fit (F(1,229)=2.9166, p=0.08903). Therefore, interaction in (PPMC * sealevelCngC) is not strongly supported, and I removed the interaction term.
+```{r}
+#removing terms using partial f tests
+anova(mod1, mod2)
+```
+
+Removing most of surfacepressC because it showed as the least significant from model 2
+```{r}
+mod3 <- lm(disaster.4 ~ 
+                PPMC + seaTempC + sealevelCngC + I(PPMC^3) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (surfaceTempCngC*sealevelCngC) , 
+              data = train_data) 
+summary(mod3)
+```
+
+The partial F-test comparing full and reduced models showed that removing the  
+surfacepressC interaction terms did not significantly reduce model fit for neither the full model or the first reduced model (F(6,234 )=1.7516 , p=0.1101), and (F(5,234)=1.506 , p=0.1888). Therefore,surfacepressC does not strongly interact with other terms, and I removed it
+```{r}
+anova(mod1, mod3)
+anova(mod2, mod3)
+```
+Removing surfaceTempCngC because it showed as not significant in the previous model
+
+```{r}
+mod4 <- lm(disaster.4 ~ 
+                PPMC + seaTempC + sealevelCngC + I(PPMC^3) 
+              + I(surfacePressC^2) + I(sealevelCngC^2), 
+              data = train_data) 
+summary(mod4)
+
+```
+We can see that model 4, which is highly reduced is much worse than the full model and it means we have reduced too far.
+The partial F-test comparing full and reduced models showed that removing the surfaceTempCngC variable term did significantly reduce model fit (F(9,237 )=4.2207 , p=4.545e-05). Therefore, surfaceTempCngC is strongly significant, so I will add it back in. 
+
+```{r}
+anova(mod1, mod4)
+
+```
+
+It is also significantly worse than both of the previous reduced models
+```{r}
+anova(mod3, mod4)
+anova(mod2, mod4)
+
+```
+
+
+```{r}
+par(mfrow = c(2,2))
+plot(mod3)
+
+```
+
+
+```{r}
+test_data$disaster.4 <- test_data$totalDisasters^0.4
+
+#centering everything
+test_data$PPMC <- test_data$PPM - mean(test_data$PPM)
+
+test_data$seaTempC <- test_data$aveMonthSeaTemp - mean(test_data$aveMonthSeaTemp)
+
+test_data$surfacePressC <- test_data$avg_surfacePressure - mean(test_data$avg_surfacePressure)
+
+test_data$surfaceTempCngC <- test_data$Anomaly - mean(test_data$Anomaly)
+
+test_data$sealevelCngC <- test_data$avg_cng_sealevel - mean(test_data$avg_cng_sealevel)
+
+
+
+pred_test <- predict(mod3, newdata = test_data) 
+pred_test_adj <- pred_test^(1/.4)
+RMSE <- sqrt(mean((test_data$totalDisasters - pred_test_adj)^2))
+
+RMSE
+
+R2_test <- 1 - sum((test_data$disaster.4 - pred_test)^2) / sum((test_data$disaster.4 - mean(test_data$disaster.4))^2)
+R2_test
+```
+
+Model generalizes not with test R² = 0.3177, indicating low predictive stability. This is not a large concern due to the low number of variables for a topic as complex as 
+
+
+
+I found that the key predictors are atmospheric carbon concentration (PPMC), sea temperature (seaTempC), sea level change (sealevelCngC). All of the final terms are significant except for surfaceTempCng however the interaction term involving it is highly significant which means it must be included. Dropping anymore terms greatly decreased the model's usefulness so model 3 was the best of both worlds in terms of usefulness and size. The most influential decisions were adding interactions and transformations to each of the terms. Since adding higher order terms improved the model so much, it means our original data was not linear but higher order terms fixed it. The transformation to the Y variable helped out a lot in increasing the R^2 adjusted, the boxcox graph was great for that. It was hard to balance fit vs interpretability because my full model with a million terms is the best fit however it was also very clustered and difficult to read and understand. I was able to take out a few terms without the R^2 dropping significantly, when I took out a few more afterwards the R^2 tanked and the partial F test showed the same issue. Overall it was a back and forth process that required removing terms then adding them back to see how the model compared to the others. 
+
+
+
+
+
+
+
+
+
+
+

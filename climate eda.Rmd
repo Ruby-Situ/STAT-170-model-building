@@ -1,0 +1,299 @@
+---
+name: "Ruby Situ"
+title: "climate eda"
+output: html_document
+date: "2025-11-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+ install.packages("ncdf4")
+ install.packages("reshape2")
+ library(reshape2)
+    library(ncdf4)
+```
+
+**Yes the conversion of the files from NC to CSV is done by chatgpt, I had 0 experience working with NC files before this. **
+
+```{r}
+library(ncdf4)
+library(dplyr)
+
+oceanTemp <- nc_open("sst.mnmean.nc")
+sst_array <- ncvar_get(oceanTemp, "sst")
+lat <- ncvar_get(oceanTemp, "lat")
+lon <- ncvar_get(oceanTemp, "lon")
+time <- ncvar_get(oceanTemp, "time")
+time_origin <- as.Date(substr(ncatt_get(oceanTemp, "time", "units")$value, 12, 21))
+time_dates <- time_origin + time
+nc_close(oceanTemp)
+
+sst_array[sst_array < -1000] <- NA
+
+global_monthly_avg <- apply(sst_array, 3, function(x) mean(x, na.rm = TRUE))
+
+monthly_avg_df <- data.frame(
+  time = time_dates,
+  sst_global_avg = global_monthly_avg
+)
+write.csv(monthly_avg_df, "sst_global_monthly_avg.csv", row.names = FALSE)
+
+
+```
+
+
+
+```{r}
+nc <- nc_open("oceantempandstuff.nc")
+
+# Read coordinates
+lat  <- ncvar_get(nc, "latitude")
+lon  <- ncvar_get(nc, "longitude")
+
+time <- ncvar_get(nc, "valid_time")
+time_units <- ncatt_get(nc, "valid_time", "units")$value
+time_origin <- as.POSIXct(sub(".*since ", "", time_units), tz = "UTC")
+time_dates <- time_origin + time
+
+# ---- READ ONLY THE VARIABLES YOU NEED ----
+msl <- ncvar_get(nc, "msl")
+sp  <- ncvar_get(nc, "sp")
+
+nc_close(nc)
+
+# ---- CLEAN MISSING VALUES ----
+msl[msl > 1e20] <- NA
+sp[sp > 1e20]  <- NA
+
+# ---- GLOBAL MEANS ----
+msl_global <- apply(msl, 3, function(x) mean(x, na.rm = TRUE))
+sp_global  <- apply(sp, 3, function(x) mean(x, na.rm = TRUE))
+
+# ---- CREATE DATA FRAME ----
+df <- data.frame(
+  time = time_dates,
+  msl = msl_global,
+  sp  = sp_global
+)
+
+# ---- SAVE CSV ----
+write.csv(df, "pressure_global_avg.csv", row.names = FALSE)
+```
+
+**Inputting data**
+```{r}
+seaTemp <- read.csv("sst_global_monthly_avg.csv")
+pressure <- read.csv("pressure_global_avg.csv")
+meltSnow <- read.csv("melted.csv")
+surfaceTemp <- read.csv("monthlylandtemp.csv", skip = 3)
+carbon <- read.csv("CO2.csv")
+forestCarbon <- read.csv("ForCarb.csv")
+Disaster1970 <- read.csv("1970-2021_DISASTERS.xlsx - emdat data.csv")
+
+```
+
+**Data cleaning**
+```{r}
+carbon$Year <- substring(carbon$Date, 0, 4)
+meltSnow$Year <- substring(meltSnow$Date, 8, 11)
+forestCarbon$Year <- substring(forestCarbon$Year, 2)
+seaTemp$Year <- substring(seaTemp$time, 0, 4)
+pressure$Year <- substring(pressure$time, 0, 4)
+
+pressure$Month <- substring(pressure$time, 6, 7)
+carbon$Month <- substring(carbon$Date, 6, 7)
+meltSnow$Month <- substring(meltSnow$Date, 2,3)
+seaTemp$Month <- substring(seaTemp$time, 6, 7)
+Disaster1970$Month <- Disaster1970$Start.Month
+na.omit(surfaceTemp)
+
+surfaceTempF <- surfaceTemp %>% mutate(
+              Year = substring(Date, 0, 4), 
+              Month = substring(Date, 5, 6)
+)
+
+#get rid of landcoverreplace with sea temp
+forestCarbon$Month <- sample(1:12, size = nrow(forestCarbon), replace = TRUE) 
+
+
+#getting only years after 1970, the other data sets do not go past 1992 so they don't need this step
+carbonF <- carbon %>% filter(Year >= 1970) %>% select(-ObjectId)
+carbonF <- carbonF %>% filter(Unit != "Percent")
+
+meltSnowF <- meltSnow %>% filter(Year >= 1970) %>% select(-ObjectId)
+
+#only taking the information I want which is carbon stocks in forests and urban land
+forestCarbonF <- forestCarbon %>% filter(Indicator == "Carbon stocks in forests")
+
+
+#finding average yearly change for each data set
+avg_cng_seaLevel <- meltSnowF %>%
+  group_by(Year, Month) %>%
+  summarise(avg_cng_sealevel = mean(Value))
+
+avg_c02_Atmosphere <- carbonF[, c("Year", "Month", "Value")]
+avg_c02_Atmosphere <- avg_c02_Atmosphere %>% rename(PPM = Value)
+
+avg_monthtemp_cng <- surfaceTempF[, c("Year", "Month", "Anomaly")]
+
+avg_seaTemp <- seaTemp[, c("Year", "Month", "sst_global_avg")]
+avg_seaTempF <- avg_seaTemp %>%
+  rename(aveMonthSeaTemp = sst_global_avg)
+
+avg_pressure <- pressure %>%
+  rename(avg_saePressure = msl, 
+         avg_surfacePressure = sp)
+
+avg_forestCarbon <- forestCarbonF %>%
+  group_by(Year, Month) %>%
+  summarise(ave_carbon_stock = mean(Value))
+
+#getting rid of NA and replacing it with the average of that disaster type
+#epidemic is an exception
+
+Disaster1970F <- Disaster1970 %>%
+  group_by(Disaster.Type) %>%
+  mutate(
+    groupMean = mean(Total.Damages...000.US.., na.rm = TRUE),
+    Total.Damages...000.US.. = 
+           replace(Total.Damages...000.US.., 
+           (is.na(Total.Damages...000.US..)|is.nan(Total.Damages...000.US..)),
+                   groupMean
+           )
+  )
+
+View(Disaster1970F)
+
+#getting the number of disasters per year and sort by type also
+#also getting rid of the na from the epidemic catagory because it was causing problems
+money <- Disaster1970F %>%
+  group_by(Year, Month) %>%
+  summarise(
+    totalDisasters = n(),
+    YearlyCost_Thousand = sum(Total.Damages...000.US..,  na.rm = TRUE),
+    storms = sum(Disaster.Type == "Storm"),
+    wildfire = sum(Disaster.Type == "Wildfire"),
+    landslide = sum(Disaster.Type == "Landslide"),
+    disease = sum(Disaster.Type == "Epidemic"),
+    drought = sum(Disaster.Type == "Drought"),
+    VolcanoEruption = sum(Disaster.Type == "Volcanic activity"),
+    ExtremeTemp = sum(Disaster.Type == "Extreme temperature "),
+    tsunamis = sum(Disaster.Subtype == "Tsunami"),
+    Earthquake = sum(Disaster.Subtype == "Ground movement"), 
+    AnimalAccident = sum(Disaster.Subtype == "Animal accident")
+  )
+
+#NOTE: The yearly cost is greatly reduced because EPIDEMIC does not have any information on damage cost as they occur in countries that have less documentation
+na.omit(money)  
+#ensureing all the years are integers since it was causing problems
+avg_c02_Atmosphere$Year <- as.integer(avg_c02_Atmosphere$Year)
+avg_pressure$Year <- as.integer(avg_pressure$Year)
+avg_cng_seaLevel$Year <- as.integer(avg_cng_seaLevel$Year)
+avg_seaTempF$Year <- as.integer(avg_seaTempF$Year)
+avg_monthtemp_cng$Year <- as.integer(avg_monthtemp_cng$Year)
+money$Year <- as.integer(money$Year)
+
+avg_c02_Atmosphere$Month <- as.integer(avg_c02_Atmosphere$Month)
+avg_pressure$Month <- as.integer(avg_pressure$Month)
+avg_cng_seaLevel$Month <- as.integer(avg_cng_seaLevel$Month)
+avg_seaTempF$Month <- as.integer(avg_seaTempF$Month)
+avg_monthtemp_cng$Month <- as.integer(avg_monthtemp_cng$Month)
+money$Month <- as.integer(money$Month)
+
+```
+
+**Merging the datasets into one**
+```{r}
+merged <- avg_c02_Atmosphere %>% 
+          inner_join(avg_cng_seaLevel, by = c("Year", "Month")) %>%
+          inner_join(avg_c02_Atmosphere, by = c("Year", "Month")) %>%
+          inner_join(avg_seaTempF, by = c("Year", "Month")) %>%
+          inner_join(avg_monthtemp_cng, by = c("Year", "Month")) %>%
+          inner_join(avg_pressure, by = c("Year", "Month")) %>%
+          inner_join(money, by = c("Year", "Month"))
+
+merged <- merged%>%select(-PPM.y)%>% rename(PPM = PPM.x)
+  
+na.omit(merged)
+View(merged)
+write.csv(merged, file = "mergeddata.csv", row.names = FALSE)
+
+```
+
+
+**1 data split**
+```{r}
+set.seed(58)    #seed 58
+n <- nrow(merged)
+train_index <- sample(1:n, size = 0.7 * n)
+train_data <- merged[train_index, ]
+test_data  <- merged[-train_index, ]
+
+
+```
+
+**Step 2- Data Description**
+
+The data sets came from climatedata.imf.org and from kaggle that I cleaned and merged together, matching by year because the months were not available for a few of the data sets. These show the cost of each natural disaster and the state of the planet during that time, with data on co2 concentrations both in the atmosphere and held in the forests, as well as surface temperature and sea level. It even has how much artificial land was created, such as buildings and roads. 
+
+"Year"  - integer - the year of the disasters
+"PPM"  - integer - the parts per million of c02 in the atmosphere
+"avg_cng_sealevel" - integer - average change in sea level that year in millimeters
+"ave_artificialLand" - integer - amount of artificial land cover added that year in 1000 hectares
+"ave_carbon_stock"- integer - average carbon stocked in forests in Million tonnes
+"ave_temp_cng" - integer - average surface temperature change that year in Fahrenheit 
+"totalDisasters" - integer - total number of natural disasters that year
+"YearlyCost_Thousand" - integer - the total cost of natural disasters, except for epidemics because the cost was not available
+"storms" - integer - includes hurricanes, typhoons, ice storms, and other extreme storms
+"wildfire" - integer - burning of forests
+"landslide" -  integer - mud slide/ land slide 
+"disease" -  integer - epidemics, no cost data available
+"drought"  -  integer - drought
+"VolcanoEruption" - integer - lava flows and explosive eruptions
+"ExtremeTemp" - integer - extreme hot or cold
+"tsunamis" -  integer - tsunami, separated from earthquake because of the drasticly different effects
+"Earthquake" -  integer - earthquake, separated from tsunami because of very differnt effects
+"AnimalAccident" - integer - hippo attack, killed multiple
+
+
+Response variable = yearly cost of natural disasters
+Predictor variables = PPM, avg_cng_sealevel, ave_artificialLand, ave_carbon_stock, ave_temp_cng
+
+sample size after split : 21 and 9 
+
+**Step 3 - Descriptive statistics**
+```{r}
+#predictors
+sums <- train_data %>% select(2:6)
+summary(sums)
+
+#looking at percentages of the different disasters per year rounded to 2 decimals
+format(round(((train_data[,9:18] / train_data$totalDisasters) * 100), 2))
+
+#the counts are already in the dataset
+summary(train_data[, 9:18])
+```
+
+PPM : the mean and median look about the same, symmetrical. median= 384.0ppm 
+sea level : the mean is much bigger than the median, right skewed median= 18.454mm
+artificial land : mean is smaller than the median, left skewed median = 193.3 x 1000 hectares
+carbon stock in forests : mean and median are almost the same, symmetrical. median = 6738 million tons
+surface tempurature change : mean and median are similar, mostly symmetrical. median = 0.9249 degrees 
+
+**Step 4 - Visual Exploration **
+```{r}
+par(mfrow = c(2,2))
+for (i in 1:ncol(sums))
+{
+  hist(sums[[i]], main = colnames(sums)[i], xlab = colnames(sums)[i])
+  boxplot(sums[[i]], main = colnames(sums)[i])
+  plot(sums[[i]], main = colnames(sums)[i], ylab = colnames(sums)[i])
+  barplot(sums[[i]], main = colnames(sums)[i])
+  print(cor(sums[[i]], train_data$totalDisasters))
+}
+
+```
+I can see that everything is positively associated with increased number of natural disasters except for carbon stock in forests which is associated with a decrease in natural disasters. This is to be expected since the more carbon the forest can hold the less there is in the atmosphere to disrupt weather patterns.The forest carbon stock also has an unusually dip in the middle that was not noticeable when only looking at the numbers. I don't see any obvious trends in any of the scatterplots, unfortunatly I think this is due to the small dataset. Artificial land and forest carbon stock are the two hisograms that do not look normally distributed and its something to look into later. The bar plot for average change in sea level is strange because it dips into negatives a few times which I didn't expect. I don't see any extreme skewing from any of the variables. 
+
+

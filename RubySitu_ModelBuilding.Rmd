@@ -1,0 +1,254 @@
+---
+name: "Ruby Situ"
+title: "week9 eda"
+output: html_document
+date: "2025-11-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+```
+
+
+```{r}
+data <- read.csv("/Users/blubb/Desktop/170 files/mergeddata.csv")
+
+set.seed(58)    #seed 58
+n <- nrow(data)
+train_index <- sample(1:n, size = 0.7 * n)
+train_data <- data[train_index, ]
+test_data  <- data[-train_index, ]
+
+
+```
+**I realize that I messed up last weeks 1st order model so I am redoing it here first before I do this weeks higher order model. **
+
+```{r}
+#model 1
+lastWeekMod1 <- lm(totalDisasters ~ PPM + aveMonthSeaTemp  + avg_surfacePressure+avg_saePressure+ Anomaly+ avg_cng_sealevel, data = train_data)  
+summary(lastWeekMod1)
+car::vif(lastWeekMod1)
+
+#model 2
+lastWeekMod2 <- lm(totalDisasters ~ PPM + aveMonthSeaTemp  + avg_surfacePressure+ Anomaly+ avg_cng_sealevel, data = train_data)  
+summary(lastWeekMod2)
+car::vif(lastWeekMod2)
+
+#plot model 2
+par(mfrow = c(2,2))
+plot(lastWeekMod2)
+
+ggplot(data = train_data, aes(x = lastWeekMod2$residuals)) +
+    geom_histogram(fill = "lightpink") +
+    labs(title = "Histogram of Residuals", x = "Residuals")
+
+#get rmse and test R^2
+pred_test <- predict(lastWeekMod2, newdata = test_data)
+RMSE <- sqrt(mean((test_data$totalDisasters - pred_test)^2))
+RMSE
+
+testR2 <- cor(test_data$totalDisasters, pred_test)^2
+testR2
+```
+Model 1 showed bad multicollinearity so model 2 will have to be different. The multicollinearity problem has been solved by removing average sea pressure, everything is now under 5. The R^2 dropped drastically, unfortunately, but that will likely change when starting to look at interactions and higher order terms. 
+
+The histogram of residuals looks pretty normal (maybe the tiniest bit of right skewing) and the scale-location plot also looks pretty normal with no obvious pattern visible meaning the variance should be constant and therefore not have heteroscedasticity. The QQ plot also appears to be pretty well in line with the straight line and there could be potential outliers just looking at the tail of the plot, there's a few points that stray away but nothing extreme. The residuals vs fitted plot does not show any obvious pattern of curving or U shapes so we can assume this is a linear pattern. 
+
+The RSME is a little high and the test R^2 is higher than the training R^2 so there might be some under fitting in my model. This is likely something that will improve with interactions. 
+
+
+**From here to the bottom is now the week 8 work**
+
+**Step 1&2**
+All plot look normal and linear at first glance but if i look extremely closely I can see a slight squiggle shape in the residuals vs fitted plot as well as the scale location plot. This faint squiggle could suggest a higher order term. 
+```{r}
+#centering everything
+train_data$PPMC <- train_data$PPM - mean(train_data$PPM)
+
+train_data$seaTempC <- train_data$aveMonthSeaTemp - mean(train_data$aveMonthSeaTemp)
+
+train_data$surfacePressC <- train_data$avg_surfacePressure - mean(train_data$avg_surfacePressure)
+
+train_data$surfaceTempCngC <- train_data$Anomaly - mean(train_data$Anomaly)
+
+train_data$sealevelCngC <- train_data$avg_cng_sealevel - mean(train_data$avg_cng_sealevel)
+
+#looking at relationship between every variable
+pairs(train_data[, c("totalDisasters", "PPM", "aveMonthSeaTemp",
+                     "avg_surfacePressure", "Anomaly", "avg_cng_sealevel")])
+```
+It appears that there could be very mild curving with all the predictors except for average change in sea level and surface pressure. However the graphs are not very clear so I will try higher order terms on all of predictors. 
+
+```{r}
+mod3 <- lm(totalDisasters ~ PPMC + seaTempC + surfaceTempCngC + sealevelCngC + surfacePressC + I(PPMC^2) + I(seaTempC^2) + I(surfaceTempCngC^2) + I(surfacePressC^2) + I(sealevelCngC^2), data = train_data) 
+summary(mod3)
+
+mod4 <- lm(totalDisasters ~ PPMC + seaTempC + surfaceTempCngC + sealevelCngC + surfacePressC + I(PPMC^3) + I(seaTempC^3) + I(surfaceTempCngC^3) + I(surfacePressC^3) + I(sealevelCngC^3), data = train_data) 
+summary(mod4)
+```
+Adding higher order terms did help to raise the adjusted R^2 up to 0.198 which is not amazing but a big improvement from 0.08. I can also see that the overall model became more significant and so did individual predictors. Using ^3 actually made things worse so I will continue using ^2 instead. The exception seems to be for PPM where the cubic transformation seemed to make it significant so I will move forward with the cubic only for PPM.  
+
+
+**Step 3**
+Based on the plots above it seems that every predictor has interaction with every other predictor so I am going to try every possible interaction. This tracks well with how climate works, there are hundreds of factor contributing to natural disasters and most of them are heavily interconnected. 
+```{r}
+#only interactions with PPM
+modInt1 <- lm(totalDisasters ~ PPMC + seaTempC + surfaceTempCngC + sealevelCngC + surfacePressC + I(PPMC^3) + I(seaTempC^2) + I(surfaceTempCngC^2) + I(surfacePressC^2) + I(sealevelCngC^2) + PPMC*surfaceTempCngC + PPMC*seaTempC + PPMC*sealevelCngC + PPMC*surfacePressC, data = train_data) 
+summary(modInt1)
+
+#adding in the sea temp interactions, R^2 adj still going up
+modInt2 <- lm(totalDisasters ~ PPMC + seaTempC + surfaceTempCngC + sealevelCngC + surfacePressC + I(PPMC^3) + I(seaTempC^2) + I(surfaceTempCngC^2) + I(surfacePressC^2) + I(sealevelCngC^2) + PPMC*surfaceTempCngC + PPMC*seaTempC + PPMC*sealevelCngC + PPMC*surfacePressC + seaTempC*sealevelCngC + seaTempC*surfaceTempCngC + seaTempC*surfacePressC, data = train_data) 
+summary(modInt2)
+
+#adding in surface temperature change interactions. Adjusted R^2 continues to go up so I will continue to try more terms
+modInt3 <- lm(totalDisasters ~ 
+                PPMC + seaTempC + surfaceTempCngC + sealevelCngC + surfacePressC 
+              + I(PPMC^3) + I(seaTempC^2) + I(surfaceTempCngC^2) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (PPMC*seaTempC) + (PPMC*sealevelCngC) + (PPMC*surfacePressC) 
+              + (seaTempC*sealevelCngC) + (seaTempC*surfaceTempCngC) 
+              + (seaTempC*surfacePressC) + (surfaceTempCngC*sealevelCngC) 
+              + (surfaceTempCngC*surfacePressC), 
+              data = train_data) 
+summary(modInt3)
+
+#added in the last interaction and adjusted R^2 actually went up again, so this is the best model so far
+modInt4 <- lm(totalDisasters ~ 
+                PPMC + seaTempC + surfaceTempCngC + sealevelCngC + surfacePressC 
+              + I(PPMC^3) + I(seaTempC^2) + I(surfaceTempCngC^2) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (PPMC*seaTempC) + (PPMC*sealevelCngC) + (PPMC*surfacePressC) 
+              + (seaTempC*sealevelCngC) + (seaTempC*surfaceTempCngC) 
+              + (seaTempC*surfacePressC) + (surfaceTempCngC*sealevelCngC) 
+              + (surfaceTempCngC*surfacePressC) + (sealevelCngC*surfacePressC), 
+              data = train_data) 
+summary(modInt4)
+
+#removing the non significant values and trying out higher order interactions
+#this caused the adjusted R^2 to go down so then model 4 is the best one 
+#none of the higher order interactions are significant so I will exclude them
+modInt5 <- lm(totalDisasters ~ 
+                PPMC + seaTempC + surfaceTempCngC + sealevelCngC + surfacePressC 
+              + I(PPMC^3) + I(seaTempC^2) + I(surfaceTempCngC^2) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (PPMC*sealevelCngC) + (PPMC*surfacePressC) 
+              + (seaTempC*sealevelCngC) + (seaTempC*surfaceTempCngC) 
+              + (surfaceTempCngC*sealevelCngC) + (surfaceTempCngC*surfacePressC)
+              + (sealevelCngC*surfacePressC) + (I(PPMC^3)*surfaceTempCngC) 
+              + (I(PPMC^3)*surfacePressC) + (I(PPMC^3)*sealevelCngC) 
+              + (I(seaTempC^2)*surfacePressC) + (I(seaTempC^2)*sealevelCngC), 
+              data = train_data) 
+summary(modInt5)
+
+
+```
+**Step 4**
+Using model 4, I have 20 terms and a sample size of 223 which gives a little over 20 data points per predictor which is not too bad, therefore this is an ok number of predictors. 
+
+There does not seem to be any issues with multicollinearity. 
+```{r}
+car::vif(modInt4, type = "predictor")
+```
+**Step 5 Part 1**
+The curve seems to peak at lambda = 0.4. 
+```{r}
+library(MASS)
+boxcox(modInt4, lambda = seq(-1, 1))
+
+```
+After the Y transformation the adjusted R^2 went up to 32.34 which is a good improvement. 
+```{r}
+train_data$disaster.4 <- train_data$totalDisasters^0.4
+modTransform <- lm(disaster.4 ~ 
+                PPMC + seaTempC + surfaceTempCngC + sealevelCngC + surfacePressC 
+              + I(PPMC^3) + I(seaTempC^2) + I(surfaceTempCngC^2) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (PPMC*seaTempC) + (PPMC*sealevelCngC) + (PPMC*surfacePressC) 
+              + (seaTempC*sealevelCngC) + (seaTempC*surfaceTempCngC) 
+              + (seaTempC*surfacePressC) + (surfaceTempCngC*sealevelCngC) 
+              + (surfaceTempCngC*surfacePressC) + (sealevelCngC*surfacePressC), 
+              data = train_data) 
+summary(modTransform)
+
+```
+**Step 5 Part 2**
+
+I can see the worlds slightest curving for ppmc and maybe sea temp and sea elvel change however, this was already addressed with using higher order terms which is why I think further transformation is not nesscary in this case. 
+```{r}
+#looking at scatter plots for curving
+
+par(mfrow = c(3, 2))
+plot(train_data$PPMC, train_data$totalDisasters)
+plot(train_data$seaTempC, train_data$totalDisasters)
+plot(train_data$surfaceTempCngC, train_data$totalDisasters)
+plot(train_data$sealevelCngC, train_data$totalDisasters)
+plot(train_data$surfacePressC, train_data$totalDisasters)
+
+```
+**Step 5, part 3**
+
+I decided to do do a Y transformation because the boxcox plot showed that improvement was possible as the peak was at lambda = 0.4 and it went above the 95% line. I did not do any further X transformations because the scatter plots looked fine and any slight curving was addressed through the higher order terms. All of the plots look linear at first glance but have very slight curving when looking closer, which is what the higher order terms fixed. Before, the R^2 adjusted was 30 and afterwards the R^2 adjusted was 32, this is a good amount when taking into account that our data set only looks at a few factors of climate disasters when it should have hundreds of variables. I included a side by side before and after of the Y transformation. 
+
+
+```{r}
+par(mfrow = c(1, 2))
+boxcox(modInt4, lambda = seq(-1, 1))
+boxcox(modTransform, lambda = seq(-1, 1))
+
+```
+**Step 6**
+
+```{r}
+#reduced model
+modRefined <- lm(disaster.4 ~ 
+                PPMC + seaTempC + sealevelCngC + I(PPMC^3) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (PPMC*sealevelCngC) + (PPMC*surfacePressC) 
+              + (seaTempC*surfacePressC) + (surfaceTempCngC*sealevelCngC) 
+              + (surfaceTempCngC*surfacePressC) + (sealevelCngC*surfacePressC), 
+              data = train_data) 
+summary(modRefined)
+
+car::vif(modRefined, type = "predictor")
+
+par(mfrow = c(2,2))
+plot(modRefined)
+```
+**Step 7**
+
+```{r}
+test_data$PPMC <- test_data$PPM - mean(train_data$PPM)
+test_data$seaTempC <- test_data$aveMonthSeaTemp - mean(train_data$aveMonthSeaTemp)
+test_data$surfacePressC <- test_data$avg_surfacePressure - mean(train_data$avg_surfacePressure)
+test_data$surfaceTempCngC <- test_data$Anomaly - mean(train_data$Anomaly)
+test_data$sealevelCngC <- test_data$avg_cng_sealevel - mean(train_data$avg_cng_sealevel)
+
+pred_test <- predict(modRefined, newdata = test_data)
+pred_test_adj <- pred_test^(1/.4)
+RMSE <- sqrt(mean((test_data$totalDisasters - pred_test_adj)^2))
+
+RMSE
+```
+Yes, this model does ultimately out perform last weeks model by a lot. This is because the R^2 adjusted increased so drastically and now nearly every term is significant or highly significant. The overall model also increased in significance by a lot. I can also see that the VIF remained very low despite all the interactions and model complexity which is a good sign.  We removed a lot of the "useless" insignificant terms which also makes this model better because its less bloated with insignificant terms. The included interactions and higher order terms helps to explain the number of disasters much better because these weather/climate factors are often intertwined so the model must also reflect that for accurate prediction. 
+
+
+```{r}
+modRefined <- lm(totalDisasters^0.4 ~ 
+                PPMC + seaTempC + sealevelCngC + I(PPMC^3) 
+              + I(surfacePressC^2) + I(sealevelCngC^2) + (PPMC*surfaceTempCngC) 
+              + (PPMC*sealevelCngC) + (PPMC*surfacePressC) 
+              + (seaTempC*surfacePressC) + (surfaceTempCngC*sealevelCngC) 
+              + (surfaceTempCngC*surfacePressC) + (sealevelCngC*surfacePressC), 
+              data = test_data) 
+summary(modRefined)
+
+
+```
+
+
+
+
+
+
+
